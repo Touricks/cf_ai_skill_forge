@@ -17,14 +17,18 @@
     "types": "wrangler types env.d.ts --include-runtime false",
     "format": "oxfmt --write .",
     "lint": "oxlint src/",
-    "check": "oxfmt --check . && oxlint src/ && tsc"
+    "check": "oxfmt --check . && oxlint src/ && tsc",
+    "test": "vitest run"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.54",
     "@cloudflare/ai-chat": "^0.1.7",
     "@cloudflare/kumo": "^1.9.0",
     "@phosphor-icons/react": "^2.1.10",
+    "@types/d3": "^7.4.3",
     "agents": "^0.7.1",
     "ai": "^6.0.105",
+    "d3": "^7.9.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "streamdown": "^2.2.0",
@@ -43,6 +47,7 @@
     "tailwindcss": "^4.2.1",
     "typescript": "^5.9.3",
     "vite": "^7.3.1",
+    "vitest": "^4.0.18",
     "wrangler": "4.69.0"
   }
 }

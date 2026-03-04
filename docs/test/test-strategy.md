@@ -2,6 +2,7 @@
 
 > Cross-day test framework, mock strategy, and dependency map.
 > Reference: sprint-plan.md, prompt-skill-forge-v2.md
+> Updated: 2026-03-03 (post-ingestion redesign)
 
 ---
 
@@ -9,11 +10,11 @@
 
 | Layer | Tool | Scope | Speed |
 |-------|------|-------|-------|
-| Unit | Vitest | Pure functions (chunking, graph computation, template fill, JSON validation) | < 5s |
-| Integration | Vitest + `unstable_dev` / Miniflare | Agent + SQLite, Workflow steps, WebSocket message routing | < 30s |
-| Smoke (manual) | Browser + `wrangler dev` | Full round-trip: UI → WebSocket → Agent → Workers AI → UI | Manual, ~5min |
+| Unit | Vitest | Pure functions (turn parsing, graph computation, template fill, JSON validation) | < 2s |
+| Integration | Vitest + mock AI / mock Workflow | Agent + SQLite, Workflow steps, WebSocket message routing | < 30s |
+| Smoke (manual) | Browser + `npm run dev` | Full round-trip: UI → WebSocket → Agent → Workers AI → UI | Manual, ~5min |
 
-### Vitest Config (Day 1 setup)
+### Vitest Config
 
 ```typescript
 // vitest.config.ts
@@ -21,22 +22,30 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    environment: "miniflare",   // Cloudflare Workers runtime emulation
-    globals: true,
     include: ["test/**/*.test.ts"],
   },
 });
 ```
 
-**Dependencies:** `vitest`, `@cloudflare/vitest-pool-workers` (for Workers-compatible test environment).
+**Dependencies:** `vitest` (devDependency). No `@cloudflare/vitest-pool-workers` needed — unit tests only test pure functions extracted to files without `cloudflare:workers` imports.
+
+**Key pattern:** Pure functions that need testing are extracted to separate modules (`workflow-helpers.ts`, `graph.ts`) so they can be imported in vitest without triggering Workers runtime dependencies.
 
 ---
 
 ## Mock Strategy
 
-### Workers AI Mock
+### Unit Tests — No Mocks Needed
 
-Unit and integration tests must NOT call real Workers AI. Use a mock that returns canned responses:
+Unit tests cover pure functions only. No Workers AI, Workflow, or WebSocket mocks required:
+- `workflow-helpers.ts` — `extractAiResponse`, `parseJsonResponse`, `validateSynthesizedSkill`, `validateSingleVerdict`
+- `graph.ts` — `computeGraphData`
+- `prompts.ts` — `fillTemplate`, prompt constants
+- `components/IngestionPanel.tsx` — `parseConversationTurns`, `speakerVariant`
+
+### Integration Tests — Mock AI + Workflow (if needed)
+
+For future integration tests that test Agent handlers end-to-end:
 
 ```typescript
 // test/mocks/ai.ts
@@ -46,46 +55,11 @@ export function createMockAI(responses: Record<string, string>) {
       const key = options.messages?.[1]?.content?.slice(0, 50) || "default";
       const matched = Object.entries(responses).find(([k]) => key.includes(k));
       const text = matched?.[1] || '[]';
-
-      if (options.stream) {
-        return new ReadableStream({
-          start(controller) {
-            controller.enqueue(new TextEncoder().encode(`data: {"response":"${text}"}\n\n`));
-            controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
-            controller.close();
-          }
-        });
-      }
       return { response: text };
     }
   };
 }
 ```
-
-### Workflow Mock
-
-For testing Agent → Workflow trigger without running the full Workflow:
-
-```typescript
-// test/mocks/workflow.ts
-export function createMockWorkflow() {
-  const instances: any[] = [];
-  return {
-    create: async (params: any) => {
-      instances.push(params);
-      return { id: "mock-workflow-id" };
-    },
-    get: async (id: string) => ({
-      status: { status: "complete" },
-    }),
-    _instances: instances,  // test inspection
-  };
-}
-```
-
-### WebSocket Mock
-
-For testing Agent `onMessage` routing without a real browser:
 
 ```typescript
 // test/mocks/connection.ts
@@ -94,7 +68,7 @@ export function createMockConnection() {
   return {
     id: "test-conn-1",
     send: (data: string) => sent.push(data),
-    _sent: sent,              // test inspection
+    _sent: sent,
     _parsed: () => sent.map(s => JSON.parse(s)),
   };
 }
@@ -106,17 +80,17 @@ export function createMockConnection() {
 
 ```
 Day 1 ─────────────────────────────────────────────────────
-  │  Gate: TypeScript compiles, wrangler dev starts,
+  │  Gate: TypeScript compiles, npm run dev starts,
   │        chat round-trip works, SQL tables exist
   │
   ├──→ Day 2 ──────────────────────────────────────────────
-  │      │  Gate: chunkConversation() passes unit tests,
-  │      │        Workflow steps execute with mock AI,
-  │      │        Ingestion Panel renders and sends messages
+  │      │  Gate: Turn parsing works, 3-step Workflow
+  │      │        executes, IngestionPanel renders,
+  │      │        synthesize → crossref → draft end-to-end
   │      │
   │      ├──→ Day 3 ───────────────────────────────────────
   │      │      │  Gate: Skill CRUD works in SQLite,
-  │      │      │        refine loop produces updated draft,
+  │      │      │        refine tool produces updated draft,
   │      │      │        search returns saved skill
   │      │      │
   │      │      ├──→ Day 4 ────────────────────────────────
@@ -157,40 +131,20 @@ Day 1 ────────────────────────�
 
 ```
 test/
-├── mocks/
-│   ├── ai.ts               # Workers AI mock
-│   ├── workflow.ts          # Workflow mock
-│   └── connection.ts        # WebSocket connection mock
-├── fixtures/
-│   ├── conversations/       # Sample conversation texts for ingestion
-│   │   ├── react-debug.md
-│   │   ├── api-design.md
-│   │   └── short-fragment.md
-│   ├── patterns/            # Expected extraction results
-│   │   └── react-debug-patterns.json
-│   └── skills/              # Sample skill definitions
-│       ├── react-state-migration.md
-│       └── api-error-handling.md
-├── unit/
-│   ├── chunking.test.ts     # Day 2: chunkConversation()
-│   ├── prompts.test.ts      # Day 1: fillTemplate()
-│   ├── graph.test.ts        # Day 4: computeGraphData()
-│   ├── validation.test.ts   # Day 2: JSON parse + field validation
-│   └── commands.test.ts     # Day 3: /ingest, /search parsing
-├── integration/
-│   ├── agent-sql.test.ts    # Day 1: schema init, CRUD
-│   ├── agent-chat.test.ts   # Day 1: chat message routing
-│   ├── workflow.test.ts     # Day 2: pipeline steps with mock AI
-│   ├── ingestion.test.ts    # Day 2: Agent triggers Workflow
-│   ├── refinement.test.ts   # Day 3: refine loop
-│   ├── search.test.ts       # Day 3: SQL + LLM search
-│   └── state-sync.test.ts   # Day 4: graph data in state
-└── smoke/
-    ├── day1-checklist.md     # Manual browser test script
-    ├── day2-checklist.md
-    ├── day3-checklist.md
-    ├── day4-checklist.md
-    └── day5-checklist.md
+├── workflow.test.ts        # extractAiResponse, parseJsonResponse, validateSynthesizedSkill, validateSingleVerdict
+├── prompts.test.ts         # fillTemplate, prompt constant exports
+├── graph.test.ts           # computeGraphData (nodes, edges, colors, sizes)
+└── ingestion-panel.test.ts # parseConversationTurns, speakerVariant
+```
+
+Source modules tested (pure functions extracted for testability):
+```
+src/
+├── workflow-helpers.ts     # Pure helpers (no cloudflare:workers import)
+├── graph.ts                # computeGraphData (extracted from server.ts)
+├── prompts.ts              # fillTemplate + prompt constants
+└── components/
+    └── IngestionPanel.tsx   # parseConversationTurns, speakerVariant
 ```
 
 ---
@@ -198,19 +152,27 @@ test/
 ## Running Tests
 
 ```bash
-# Unit tests only (fast, no network)
-npx vitest run test/unit/
-
-# Integration tests (needs miniflare)
-npx vitest run test/integration/
-
-# All automated tests
-npx vitest run
+# All unit tests
+npm test
 
 # Watch mode during development
 npx vitest
 
+# Full check (format + lint + typecheck)
+npm run check
+
 # Smoke tests — manual, follow checklist
-npx wrangler dev
-# Then open browser and follow docs/test/dayN-checklist
+npm run dev
+# Then open browser and follow docs/test/dayN test plan
 ```
+
+---
+
+## Current Test Coverage (81 tests)
+
+| File | Tests | Status |
+|------|-------|--------|
+| `test/workflow.test.ts` | 39 | PASS |
+| `test/ingestion-panel.test.ts` | 18 | PASS |
+| `test/prompts.test.ts` | 13 | PASS |
+| `test/graph.test.ts` | 11 | PASS |

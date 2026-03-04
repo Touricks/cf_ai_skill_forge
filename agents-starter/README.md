@@ -1,234 +1,139 @@
-# Agent Starter
+# Skill Forge
 
-![npm i agents command](./npm-agents-banner.svg)
+An AI-powered skill distillation tool that transforms fragmented AI conversation history into a structured, searchable, graph-visualized skill repository — built entirely on Cloudflare's platform.
 
-<a href="https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/agents-starter"><img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare"/></a>
+## What It Does
 
-A starter template for building AI chat agents on Cloudflare, powered by the [Agents SDK](https://developers.cloudflare.com/agents/).
+1. **Ingest** — Paste or upload conversation logs from Claude, ChatGPT, or Gemini
+2. **Synthesize** — A multi-step Workflow extracts patterns, cross-references existing skills, and drafts a structured SKILL.md
+3. **Refine** — Chat with the agent to iterate on skill descriptions, tags, and trigger patterns
+4. **Visualize** — Browse your skill graph with D3 force-directed layout, filter by tag, and inspect dependencies
 
-Uses Workers AI (no API key required), with tools for weather, timezone detection, calculations with approval, and task scheduling.
+## Architecture
 
-## Quick start
+```
+┌─────────────────────────────────────────────────────┐
+│  React + Vite + @cloudflare/kumo                    │
+│  ┌──────────────┐  ┌────────────────────────────┐   │
+│  │ Ingestion    │  │ Chat Panel                 │   │
+│  │ Panel        │  │ (Streamdown + tool cards)  │   │
+│  └──────┬───────┘  └────────────┬───────────────┘   │
+│         │ WebSocket             │ WebSocket          │
+└─────────┼───────────────────────┼───────────────────┘
+          │                       │
+┌─────────┴───────────────────────┴───────────────────┐
+│  AIChatAgent (Durable Object)                       │
+│  ┌────────────┐  ┌──────────┐  ┌─────────────────┐  │
+│  │ onMessage  │  │ onChat   │  │ Embedded SQLite │  │
+│  │ (ingest)   │  │ (tools)  │  │ (skills, convos)│  │
+│  └─────┬──────┘  └────┬─────┘  └─────────────────┘  │
+│        │              │                              │
+│        ▼              ▼                              │
+│  Workflow API    Anthropic SDK                       │
+│  (create)        (streamText)                        │
+└────────┬────────────────────────────────────────────┘
+         │
+┌────────▼────────────────────────────────────────────┐
+│  IngestionPipeline (Workflow)                        │
+│  Step 1: Extract patterns   ──► Workers AI (Llama)  │
+│  Step 2: Cross-ref skills   ──► Workers AI (Llama)  │
+│  Step 3: Draft SKILL.md     ──► Workers AI (Llama)  │
+│  Step 4: Notify agent       ──► Agent RPC callback  │
+└─────────────────────────────────────────────────────┘
+```
+
+### Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Frontend | React 19 + Vite 7 + Tailwind v4 + `@cloudflare/kumo` |
+| Agent | `AIChatAgent` from `@cloudflare/ai-chat` (Durable Object) |
+| Chat LLM | Anthropic Claude via `@ai-sdk/anthropic` + Vercel AI SDK `streamText()` |
+| Workflow LLM | Workers AI — `@cf/meta/llama-3.3-70b-instruct-fp8-fast` |
+| Workflow | Cloudflare Workflows (`WorkflowEntrypoint`) |
+| Storage | Agent embedded SQLite (`this.sql`) |
+| Graph | D3.js force-directed visualization |
+| Streaming | `streamdown` for markdown rendering |
+
+## Architecture Decisions
+
+### 1. AIChatAgent + Workflows (not just one)
+
+The Agent handles interactive chat (streaming responses, tool calls, state sync) while the Workflow handles the multi-step ingestion pipeline. This separation matters because ingestion involves 3 sequential LLM calls that benefit from Workflow's automatic step retry and isolation — if step 2 fails, step 1 doesn't re-run. The Agent stays responsive to chat while ingestion runs in the background.
+
+### 2. Embedded SQLite (not D1 + KV)
+
+Each user gets their own Agent instance with colocated SQLite storage. This means zero-latency reads (no network hop to D1), per-user data isolation by default, and simpler code — `this.sql` instead of managing separate D1 bindings and KV namespaces. The trade-off is no cross-user querying, which we don't need.
+
+### 3. Separate Ingestion Panel from Chat
+
+Conversation ingestion (paste/upload) is a different interaction pattern from chat. It's a one-shot action with progress feedback, not a back-and-forth conversation. Keeping it as a dedicated UI zone above the chat avoids polluting the chat history with ingestion artifacts and lets the user see progress while still chatting.
+
+### 4. Anthropic for Chat, Workers AI for Workflow
+
+Chat requires high-quality tool use and streaming — Anthropic Claude excels at both. The ingestion Workflow runs structured extraction prompts where Llama 3.3 70B performs well and runs natively on Cloudflare's infrastructure with no external API dependency or latency. This dual-LLM approach optimizes for both quality and cost.
+
+## Setup
 
 ```bash
-npx create-cloudflare@latest --template cloudflare/agents-starter
+# Clone and install
 cd agents-starter
 npm install
+
+# Authenticate with Cloudflare (required for Workers AI binding)
+npx wrangler login
+
+# Set local secrets
+# Create .dev.vars file with:
+# ANTHROPIC_API_KEY=your-key-here
+# MODEL=claude-sonnet-4-20250514
+
+# Start development server
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173) to see your agent in action.
-
-Try these prompts to see the different features:
-
-- **"What's the weather in Paris?"** — server-side tool (runs automatically)
-- **"What timezone am I in?"** — client-side tool (browser provides the answer)
-- **"Calculate 5000 \* 3"** — approval tool (asks you before running)
-- **"Remind me in 5 minutes to take a break"** — scheduling
-
-## Project structure
-
-```
-src/
-  server.ts    # Chat agent with tools and scheduling
-  app.tsx      # Chat UI built with Kumo components
-  client.tsx   # React entry point
-  styles.css   # Tailwind + Kumo styles
-```
-
-## What's included
-
-- **AI Chat** — Streaming responses powered by Workers AI via `AIChatAgent`
-- **Three tool patterns** — server-side auto-execute, client-side (browser), and human-in-the-loop approval
-- **Scheduling** — one-time, delayed, and recurring (cron) tasks
-- **Reasoning display** — shows model thinking as it streams, collapses when done
-- **Debug mode** — toggle in the header to inspect raw message JSON for each message
-- **Kumo UI** — Cloudflare's design system with dark/light mode
-- **Real-time** — WebSocket connection with automatic reconnection and message persistence
-
-## Making it your own
-
-### Name your project
-
-Update the name in `package.json` and `wrangler.jsonc` — the `name` in `wrangler.jsonc` becomes your deployed Worker's URL (`<name>.<subdomain>.workers.dev`).
-
-### Change the system prompt
-
-Edit the `system` string in `server.ts` to give your agent a different personality or focus area. This is the most impactful single change you can make.
-
-### Replace the demo tools with real ones
-
-The starter ships with demo tools (`getWeather` returns random data, `calculate` does basic arithmetic). Replace them with real implementations:
-
-```ts
-// In server.ts, replace a demo tool with a real API call:
-getWeather: tool({
-  description: "Get the current weather for a city",
-  inputSchema: z.object({ city: z.string() }),
-  execute: async ({ city }) => {
-    const res = await fetch(`https://api.weather.example/${city}`);
-    return res.json();
-  }
-}),
-```
-
-### Add your own tools
-
-Add new tools to the `tools` object in `server.ts`. There are three patterns:
-
-```ts
-// Auto-execute: runs on the server, no user interaction
-myTool: tool({
-  description: "...",
-  inputSchema: z.object({ /* ... */ }),
-  execute: async (input) => { /* return result */ }
-}),
-
-// Client-side: no execute function, browser provides the result
-// Handle it in app.tsx via the onToolCall callback
-browserTool: tool({
-  description: "...",
-  inputSchema: z.object({ /* ... */ })
-}),
-
-// Approval: add needsApproval to gate execution
-sensitiveTool: tool({
-  description: "...",
-  inputSchema: z.object({ /* ... */ }),
-  needsApproval: async (input) => true, // or conditional logic
-  execute: async (input) => { /* runs after approval */ }
-}),
-```
-
-### Customize scheduled task behavior
-
-When a scheduled task fires, `executeTask` runs on the server. It does its work and then uses `this.broadcast()` to notify connected clients (shown as a toast notification in the UI). Replace it with your own logic:
-
-```ts
-async executeTask(description: string, task: Schedule<string>) {
-  // Do the actual work
-  await sendEmail({ to: "user@example.com", subject: description });
-
-  // Notify connected clients
-  this.broadcast(
-    JSON.stringify({ type: "scheduled-task", description, timestamp: new Date().toISOString() })
-  );
-}
-```
-
-> **Why `broadcast()` instead of `saveMessages()`?** Injecting into chat history can cause the AI to see the notification as new context and re-trigger the same task in a loop. `broadcast()` sends a one-off event that the client displays separately from the conversation.
-
-### Remove scheduling
-
-If you don't need scheduling, remove `scheduleTask`, `getScheduledTasks`, and `cancelScheduledTask` from the tools object, the `executeTask` method, and the schedule-related imports (`getSchedulePrompt`, `scheduleSchema`, `Schedule`, `generateId`).
-
-### Add state beyond chat messages
-
-Use `this.setState()` and `this.state` for real-time state that syncs to all connected clients. See [Store and sync state](https://developers.cloudflare.com/agents/api-reference/store-and-sync-state/).
-
-### Add callable methods
-
-Expose agent methods as typed RPC that your client can call directly:
-
-```ts
-import { callable } from "agents";
-
-export class ChatAgent extends AIChatAgent<Env> {
-  @callable()
-  async getStats() {
-    return { messageCount: this.messages.length };
-  }
-}
-
-// Client-side:
-const stats = await agent.call("getStats");
-```
-
-See [Callable methods](https://developers.cloudflare.com/agents/api-reference/callable-methods/).
-
-### Connect to MCP servers
-
-Add external tools from MCP servers:
-
-```ts
-async onChatMessage(onFinish, options) {
-  // Connect to an MCP server
-  await this.mcp.connect("https://my-mcp-server.example/sse");
-
-  const result = streamText({
-    // ...
-    tools: {
-      ...myTools,
-      ...this.mcp.getAITools() // Include MCP tools
-    }
-  });
-}
-```
-
-See [MCP Client API](https://developers.cloudflare.com/agents/api-reference/mcp-client-api/).
-
-## Use a different AI model provider
-
-The starter uses [Workers AI](https://developers.cloudflare.com/workers-ai/) by default (no API key needed). To use a different provider:
-
-### OpenAI
-
-```bash
-npm install @ai-sdk/openai
-```
-
-```ts
-// In server.ts, replace the model:
-import { openai } from "@ai-sdk/openai";
-
-// Inside onChatMessage:
-const result = streamText({
-  model: openai("gpt-5.2")
-  // ...
-});
-```
-
-Create a `.env` file with your API key:
-
-```
-OPENAI_API_KEY=your-key-here
-```
-
-### Anthropic
-
-```bash
-npm install @ai-sdk/anthropic
-```
-
-```ts
-import { anthropic } from "@ai-sdk/anthropic";
-
-const result = streamText({
-  model: anthropic("claude-sonnet-4-20250514")
-  // ...
-});
-```
-
-Create a `.env` file with your API key:
-
-```
-ANTHROPIC_API_KEY=your-key-here
-```
+Open [http://localhost:5173](http://localhost:5173).
 
 ## Deploy
 
 ```bash
+# Set production secrets
+npx wrangler secret put ANTHROPIC_API_KEY
+npx wrangler secret put MODEL
+
+# Build and deploy
 npm run deploy
 ```
 
-Your agent is live on Cloudflare's global network. Messages persist in SQLite, streams resume on disconnect, and the agent hibernates when idle.
+## Project Structure
 
-## Learn more
+```
+src/
+  server.ts              # AIChatAgent: chat, tools, ingestion, state management
+  workflow.ts            # IngestionPipeline: extract → crossref → draft → notify
+  workflow-helpers.ts    # Shared utilities for workflow steps
+  prompts.ts             # LLM prompt templates (extract, crossref, draft, refine, search)
+  types.ts               # Domain types (SkillForgeState, SkillMetadata, messages)
+  graph.ts               # computeGraphData() — builds nodes/edges from skills
+  app.tsx                # Two-panel layout: Ingestion+Chat | Graph+Preview
+  client.tsx             # React DOM mount
+  styles.css             # Tailwind v4 + kumo imports
+  components/
+    IngestionPanel.tsx   # Paste/upload conversations + progress display
+    GraphView.tsx        # D3 force-directed skill graph with zoom/drag/filter
+    SkillPreview.tsx     # Skill detail view (tags, metadata, dependencies)
+    ToolPartView.tsx     # Tool call/result rendering in chat
+    ThemeToggle.tsx      # Dark/light mode toggle
+```
 
-- [Agents SDK documentation](https://developers.cloudflare.com/agents/)
-- [Build a chat agent tutorial](https://developers.cloudflare.com/agents/getting-started/build-a-chat-agent/)
-- [Chat agents API reference](https://developers.cloudflare.com/agents/api-reference/chat-agents/)
-- [Workers AI models](https://developers.cloudflare.com/workers-ai/models/)
+## Assignment Requirements
+
+| Requirement | Implementation |
+|-------------|---------------|
+| LLM | Anthropic Claude (chat via `@ai-sdk/anthropic`), Workers AI Llama 3.3 70B (ingestion pipeline) |
+| Workflow / Coordination | Cloudflare Workflows (`IngestionPipeline`) with 4-step LLM chain + AIChatAgent Durable Object |
+| User Input via Chat | WebSocket chat with streaming responses, tool calls (`list_skills`, `search_skills`, `refine_skill`, `get_skill`), and conversation ingestion panel |
+| Memory or State | Embedded SQLite for persistent skill storage + Agent `setState()` for real-time graph sync |
 
 ## License
 

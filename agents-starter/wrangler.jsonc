@@ -23,5 +23,12 @@
       "new_sqlite_classes": ["ChatAgent"],
       "tag": "v1"
     }
+  ],
+  "workflows": [
+    {
+      "name": "ingestion-pipeline",
+      "binding": "INGESTION_WORKFLOW",
+      "class_name": "IngestionPipeline"
+    }
   ]
 }

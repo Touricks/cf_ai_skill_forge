@@ -79,7 +79,7 @@ Day 2 is scheduled early because it's highest risk. If LLM integration has surpr
 | 3.3 | Skill CRUD: list, view, update, delete | 1.5h |
 | 3.4 | Prompt 5 (Search): SQL pre-filter + LLM answer | 1.5h |
 | 3.5 | Commands: /ingest, /search, /skills, /skill [name] | 1h |
-| 3.6 | Chat history: persist in SQLite, restore on reconnect | 1h |
+| 3.6 | Chat persistence verification: confirm AIChatAgent restores messages on reconnect (framework-managed) | 30min |
 | 3.7 | Frontend: skill preview, approve/reject, command hints | 1h |
 
 **Exit:** Full loop: ingest → review → refine → approve → search finds it. Persists across sessions.

@@ -2,6 +2,7 @@
 
 > Covers tasks 5.1–5.7 from sprint-plan.md
 > Dependencies: Days 1-4 (all core features must be functional)
+> Updated: 2026-03-03 (post-ingestion redesign — turn selection replaces pattern cards)
 
 ---
 
@@ -10,49 +11,19 @@
 ### U5.1 — Error message routing (Task 5.1)
 
 ```
-TEST: Error with source "ingestion" targets Ingestion Panel
-INPUT: AgentMessage { type: "error", message: "Pipeline failed", source: "ingestion" }
+TEST: Ingestion error arrives via onMessage as IngestionAgentMessage
+INPUT: IngestionAgentMessage { type: "error", message: "Pipeline failed" }
 PASS:  Frontend routes to Ingestion Panel error display (not chat)
 
-TEST: Error with source "chat" targets Chat Panel
-INPUT: AgentMessage { type: "error", message: "LLM timeout", source: "chat" }
-PASS:  Frontend routes to Chat Panel (displayed as system message)
+TEST: Chat error is handled by streamText error handling in the framework
+NOTE: Chat errors (LLM timeout, etc.) are caught by the AIChatAgent framework's
+      streamText error handler. The frontend displays these via useAgentChat's
+      built-in error state — no custom "source" field needed.
+PASS:  Chat panel displays error message from framework error handling
 
-TEST: Error without source defaults to chat
-INPUT: AgentMessage { type: "error", message: "Unknown error" }
-PASS:  Falls back to Chat Panel display
-```
-
-### U5.2 — File format auto-detection (Task 5.4)
-
-```
-TEST: .md file detected as markdown
-INPUT: File named "conversation.md"
-PASS:  Returns format: "markdown"
-
-TEST: .json file detected as JSON
-INPUT: File named "export.json"
-PASS:  Returns format: "json"
-
-TEST: .txt file detected as plain text
-INPUT: File named "chat.txt"
-PASS:  Returns format: "text"
-
-TEST: Unknown extension defaults to plain text
-INPUT: File named "chat.log"
-PASS:  Returns format: "text" (graceful fallback)
-```
-
-### U5.3 — Multi-file batch validation (Task 5.4)
-
-```
-TEST: Multiple files accepted
-INPUT: 3 files selected via file picker
-PASS:  All 3 processed, results aggregated
-
-TEST: Mixed valid + invalid files → partial success
-INPUT: 2 valid .md files + 1 binary .png file
-PASS:  2 files ingested, 1 skipped with warning message
+TEST: Ingestion error without message field defaults gracefully
+INPUT: IngestionAgentMessage { type: "error" }
+PASS:  Falls back to generic "An error occurred" in Ingestion Panel
 ```
 
 ---
@@ -79,7 +50,7 @@ PASS:  User can see if ingestion completed or needs re-trigger
 ```
 TEST: New user sees onboarding state
 SETUP: Fresh Agent instance (no skills, no chat history)
-CHECK: Chat panel: welcome message or empty state prompt
+CHECK: Chat panel: suggestion prompts visible ("What skills do I have?", etc.)
 CHECK: Graph panel: "No skills yet" message (not blank/broken)
 CHECK: Ingestion panel: clear call-to-action to paste first conversation
 PASS:  Every panel has a meaningful empty state
@@ -96,7 +67,8 @@ PASS:  No blank gap between send and response
 
 TEST: Ingestion shows progress for each pipeline step
 RUN:   Start ingestion
-CHECK: Progress bar or step indicator updates as each Workflow step completes
+CHECK: Progress bar updates as each Workflow step completes
+       (synthesize → crossref → draft)
 PASS:  User knows the pipeline is working (not frozen)
 ```
 
@@ -107,10 +79,10 @@ PASS:  User knows the pipeline is working (not frozen)
 ### S5.1 — Error state: network timeout (Task 5.1)
 
 ```
-RUN:    Stop `wrangler dev` while app is open
+RUN:    Stop `npm run dev` while app is open
 CHECK:  UI shows connection lost indicator (not blank screen)
 CHECK:  Attempting to send message shows "Disconnected" or similar
-RUN:    Restart `wrangler dev`
+RUN:    Restart `npm run dev`
 CHECK:  App reconnects and restores state
 PASS:   Graceful handling of server unavailability
 ```
@@ -138,23 +110,13 @@ PASS:   Smooth loading experience
 
 ```
 SETUP:  Use incognito window or new Agent instance name
-CHECK:  Onboarding message in chat area
+CHECK:  Suggestion prompts in chat area ("What skills do I have?", etc.)
 CHECK:  Empty graph with "no skills" message
 CHECK:  Ingestion panel shows clear CTA
 PASS:   First-time user knows what to do
 ```
 
-### S5.5 — Multi-file batch upload (Task 5.4)
-
-```
-RUN:    Select 3 .md files via file picker in Ingestion Panel
-CHECK:  All 3 files queued for ingestion
-CHECK:  Progress shows per-file status
-CHECK:  Results aggregated (patterns from all 3 conversations)
-PASS:   Batch upload works
-```
-
-### S5.6 — Dark theme consistency (Task 5.5)
+### S5.5 — Dark theme consistency (Task 5.5)
 
 ```
 CHECK:  All UI elements use dark theme (no white backgrounds anywhere)
@@ -165,7 +127,7 @@ CHECK:  Cloudflare orange (#f97316) used sparingly as accent
 PASS:   Consistent dark theme throughout
 ```
 
-### S5.7 — Responsive behavior (Task 5.5)
+### S5.6 — Responsive behavior (Task 5.5)
 
 ```
 RUN:    Resize browser window to < 768px width
@@ -175,14 +137,14 @@ CHECK:  Graph is still visible (may be below chat)
 PASS:   Not broken on narrow screens (desktop-first but not desktop-only)
 ```
 
-### S5.8 — README completeness (Task 5.6)
+### S5.7 — README completeness (Task 5.6)
 
 ```
 CHECK:  README includes:
   [ ] Project overview (what Skill Forge does)
   [ ] Architecture diagram or description
   [ ] Setup instructions (npm install, wrangler config)
-  [ ] How to run locally (npx wrangler dev)
+  [ ] How to run locally (npm run dev)
   [ ] How to deploy (npx wrangler deploy)
   [ ] Architecture decisions:
       [ ] Why Agent SDK + Workflows (not just one or the other)
@@ -192,7 +154,7 @@ CHECK:  README includes:
 PASS:   Reviewer can understand architecture in 10 minutes
 ```
 
-### S5.9 — Production deployment (Task 5.7)
+### S5.8 — Production deployment (Task 5.7)
 
 ```
 RUN:    npx wrangler deploy
@@ -202,31 +164,30 @@ CHECK:  Terminal shows production URL
 RUN:    Open production URL in browser
 CHECK:  App loads (dark theme, two-panel layout)
 CHECK:  Chat works (streaming response from Workers AI)
-CHECK:  Ingestion works (paste → patterns → draft)
+CHECK:  Ingestion works (paste → parse turns → select → extract → approve)
 CHECK:  Skills persist (save → refresh → still there)
 CHECK:  Graph renders (if skills exist)
-CHECK:  /api/health returns {"status":"ok",...}
 PASS:   Production deployment is fully functional
 ```
 
-### S5.10 — Full end-to-end regression (all days)
+### S5.9 — Full end-to-end regression (all days)
 
 ```
 On production URL, run through the complete user journey:
 
-1. Open app → see empty state / onboarding
-2. Expand ingestion panel → paste a real conversation → Start Analysis
-3. Wait for pipeline → pattern cards appear
-4. Confirm patterns → draft skill appears
-5. In chat, give feedback → skill refines
-6. Approve skill → saved to repository
-7. Repeat steps 2-6 with 2 more conversations (total 3+ skills)
-8. Check graph → 3+ nodes, edges visible
-9. Click node → skill detail shown
-10. Hover node → tooltip appears
-11. Filter by tag → correct nodes highlighted
-12. "/search [keyword]" → finds relevant skill
-13. "/skills" → lists all skills
+1. Open app → see empty state / suggestion prompts
+2. Open ingestion panel → paste a real conversation → "Parse Turns"
+3. Turn selection UI → select turns within token budget
+4. Add skill hint → "Extract Skill" → progress bar shows 3 steps
+5. Draft skill appears → review name, description, key decisions, markdown
+6. Click "Approve & Save" → skill saved to repository
+7. In chat, ask "What skills do I have?" → LLM calls listSkills, shows saved skill
+8. In chat, give feedback → LLM calls refineSkill, shows updated content
+9. Repeat steps 2-6 with 2 more conversations (total 3+ skills)
+10. Check graph → 3+ nodes, edges visible
+11. Click node → skill detail shown
+12. Hover node → tooltip appears
+13. Search for keyword → finds relevant skill
 14. Close tab → reopen → all data persists
 15. Delete a skill → removed from graph and search
 
@@ -241,10 +202,10 @@ PASS:  All 15 steps succeed on production.
 |---|-----------|------|
 | G5.1 | Error states don't crash the app | S5.1, S5.2 |
 | G5.2 | Empty states are meaningful | S5.4 |
-| G5.3 | Dark theme is consistent | S5.6 |
-| G5.4 | README explains architecture decisions | S5.8 |
-| G5.5 | Production deploy works | S5.9 |
-| G5.6 | Full end-to-end regression passes on production | S5.10 |
+| G5.3 | Dark theme is consistent | S5.5 |
+| G5.4 | README explains architecture decisions | S5.7 |
+| G5.5 | Production deploy works | S5.8 |
+| G5.6 | Full end-to-end regression passes on production | S5.9 |
 
 **All 6 gates must pass for project submission.**
 
@@ -256,7 +217,7 @@ Final check that the 4 required Cloudflare components are demonstrably used:
 
 | Requirement | Verified By |
 |-------------|------------|
-| LLM integration | S5.10 step 3 (extraction) + step 5 (refinement) + step 12 (search) |
-| Workflow / coordination | S5.10 step 2-4 (ingestion pipeline with 4 steps + retry) |
-| User input (chat) | S5.10 step 5 (chat refinement) + step 12-13 (commands) |
-| Memory / state | S5.10 step 14 (close tab → reopen → data persists via SQLite) |
+| LLM integration | S5.9 step 5 (synthesis) + step 8 (refinement) + step 13 (search) |
+| Workflow / coordination | S5.9 step 4 (ingestion pipeline with 3 steps: synthesize → crossref → draft) |
+| User input (chat) | S5.9 step 7-8 (chat tools: listSkills, refineSkill, searchSkills) |
+| Memory / state | S5.9 step 14 (close tab → reopen → data persists via SQLite) |

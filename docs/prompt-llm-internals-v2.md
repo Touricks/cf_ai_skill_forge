@@ -11,26 +11,33 @@
 
 ## Architecture Overview: Where Each Prompt Runs
 
-The frontend has two distinct UI entry points — the **Ingestion Panel** (dedicated paste/upload area) and the **Chat Panel** (conversational input). Both share one WebSocket connection; the Agent's `onMessage` router dispatches by message `type`.
+The frontend has two distinct UI entry points — the **Ingestion Panel** (dedicated paste/upload area) and the **Chat Panel** (conversational input). Both share one WebSocket connection to the same `ChatAgent` instance. The `AIChatAgent` framework has two separate handlers:
+
+- **`onChatMessage`** — handles chat protocol messages (from `useAgentChat`). Uses `streamText()` + `tool()` for refine, search, list.
+- **`onMessage`** — handles custom WebSocket messages (from `useAgent.send()`). Used for ingestion protocol only.
 
 ```
 ┌─ Ingestion Panel ─┐       ┌─ Chat Panel ──────────┐
-│ Paste / upload     │       │ Chat, refine, search,  │
-│ conversation text  │       │ approve, delete         │
+│ Paste / upload     │       │ Chat, refine, search   │
+│ conversation text  │       │ (natural language)      │
 └────────┬──────────┘       └────────┬───────────────┘
-         │ { type: "ingest" }        │ { type: "chat" | "refine" | ... }
+         │ useAgent.send()           │ useAgentChat.sendMessage()
+         │ { type: "ingest" }        │ (framework chat protocol)
          ▼                           ▼
-        Agent receives via onMessage (WebSocket)
-        │                            │
-        │ type === "ingest"          │ type === "chat" / "refine" / "search" / ...
-        │                            │
-        │  Agent triggers:           ▼  ┌─── Agent (real-time, interactive) ───┐
-        │  INGESTION_WORKFLOW           │                                       │
-        │  .create(...)                 │  PROMPT 4 — REFINE (per feedback turn)│
-        │                               │      └→ returns: updated skill md     │
-        ▼                               │                                       │
-┌─── Cloudflare Workflow ──────┐        │  PROMPT 5 — SEARCH (on user query)    │
-│   (auto-retry per step)      │        │      └→ returns: conversational answer │
+      Agent.onMessage()           Agent.onChatMessage()
+         │                           │
+         │ type: "ingest"            │ streamText() + tool() calls
+         │ type: "confirm_patterns"  │
+         │ type: "approve"           ▼  ┌─── Agent (real-time, interactive) ───┐
+         │ type: "delete_skill"         │                                       │
+         │                              │  refineSkill tool → PROMPT 4          │
+         │  Agent triggers:             │      └→ returns: updated skill md     │
+         │  INGESTION_WORKFLOW          │                                       │
+         │  .create(...)                │  searchSkills tool → PROMPT 5         │
+         │                              │      └→ returns: conversational answer │
+         ▼                              │                                       │
+┌─── Cloudflare Workflow ──────┐        │  listSkills tool → SQL query          │
+│   (auto-retry per step)      │        │      └→ returns: skill list           │
 │                              │        │                                       │
 │  STEP 1: Chunk (non-LLM)    │        └───────────────────────────────────────┘
 │     └→ chunks to step state  │
@@ -52,12 +59,12 @@ The frontend has two distinct UI entry points — the **Ingestion Panel** (dedic
         Agent calls this.setState → Ingestion Panel auto-updates
         (pendingPatterns, ingestionStatus, draftSkill)
         User reviews patterns in Ingestion Panel → confirms
-        User refines drafts via Chat Panel → Prompt 4
+        User refines drafts via Chat Panel → tool() calls
 ```
 
 **Key distinctions:**
-- Prompts 1-3 run inside Workflow steps (batch, with retry). Triggered from the **Ingestion Panel**.
-- Prompts 4-5 run inside the Agent (real-time, interactive, streaming). Triggered from the **Chat Panel**.
+- Prompts 1-3 run inside Workflow steps (batch, with retry). Triggered from the **Ingestion Panel** via `onMessage`.
+- Prompts 4-5 run inside the Agent (real-time, interactive, streaming). Triggered from the **Chat Panel** via `onChatMessage` as `tool()` definitions — the LLM decides when to invoke them based on user intent.
 - State updates route to the correct UI panel: ingestion status → Ingestion Panel, chat responses → Chat Panel, graph/skill data → Right Panel.
 
 ---

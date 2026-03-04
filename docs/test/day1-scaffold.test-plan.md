@@ -35,7 +35,7 @@ PASS: Returns "ok and ok"
 
 ```
 TEST: All 6 prompt exports are non-empty strings
-CHECK: SYSTEM_PROMPT, EXTRACT_PROMPT, CROSSREF_PROMPT, DRAFT_PROMPT, REFINE_PROMPT, SEARCH_PROMPT
+CHECK: SYSTEM_PROMPT, SYNTHESIZE_PROMPT, CROSSREF_PROMPT, DRAFT_PROMPT, REFINE_PROMPT, SEARCH_PROMPT
 PASS: Each is typeof "string" && length > 50
 ```
 
@@ -43,8 +43,9 @@ PASS: Each is typeof "string" && length > 50
 
 ```
 TEST: All type interfaces are importable
-CHECK: Env, ClientMessage, AgentMessage, ExtractedPattern, CrossrefVerdict,
-       SkillMetadata, GraphNode, GraphEdge, ChatMessage, SkillForgeState
+CHECK: ConversationTurn, SynthesizedSkill, CrossrefVerdict, SkillMetadata, GraphNode, GraphEdge,
+       IngestionClientMessage, IngestionAgentMessage, SkillForgeState
+       (Note: ExtractedPattern still defined but unused after ingestion redesign)
 PASS: No import errors
 ```
 
@@ -55,20 +56,20 @@ PASS: No import errors
 ### I1.1 — Agent SQL schema initialization (Task 1.4)
 
 ```
-TEST: onStart creates 4 tables
-SETUP: Instantiate SkillForgeAgent with miniflare SQLite
+TEST: onStart creates 3 tables
+SETUP: Instantiate ChatAgent with miniflare SQLite
 RUN:   agent.onStart()
 CHECK: SELECT name FROM sqlite_master WHERE type='table'
-PASS:  Result includes: skills, conversations, conversation_skill_links, chat_history
+PASS:  Result includes: skills, conversations, conversation_skill_links
 ```
 
-### I1.2 — Agent onMessage routing (Task 1.4)
+### I1.2 — Agent onMessage routing for ingestion channel (Task 1.4)
 
 ```
-TEST: "chat" type routes to handleChat
-SETUP: Mock connection, mock AI (returns "Hello!")
-RUN:   agent.onMessage(conn, '{"type":"chat","content":"hi"}')
-PASS:  conn._sent includes message with type "chunk" AND message with type "done"
+TEST: "ingest" type routes to ingestion handler
+SETUP: Mock connection, mock Workflow binding
+RUN:   agent.onMessage(conn, '{"type":"ingest","turns":["User: help me\\nAssistant: sure"],"skillHint":"debugging"}')
+PASS:  conn._parsed()[0].type === "ingestion_started" OR "error" with "not implemented"
 
 TEST: Unknown type returns error
 RUN:   agent.onMessage(conn, '{"type":"bogus"}')
@@ -77,34 +78,46 @@ PASS:  conn._parsed()[0].type === "error"
 TEST: Invalid JSON returns error
 RUN:   agent.onMessage(conn, 'not json')
 PASS:  conn._parsed()[0].type === "error" && message includes "Invalid JSON"
+
+Note: Chat messages are handled by onChatMessage (via useAgentChat / streamText),
+not by onMessage. Chat routing is tested via streamText mock separately.
 ```
 
 ### I1.3 — Agent stub handlers (Task 1.4)
 
 ```
 TEST: "ingest" returns "not implemented" stub
-RUN:   agent.onMessage(conn, '{"type":"ingest","content":"test"}')
+RUN:   agent.onMessage(conn, '{"type":"ingest","turns":["test"]}')
 PASS:  conn._parsed()[0].type === "error" && message includes "not implemented"
 
-TEST: "confirm_patterns", "refine", "approve", "delete_skill" all return stubs
+TEST: "approve", "delete_skill" all return stubs
 PASS:  Each returns error with "not implemented"
+
+Note: "refine" and "search" are tool() calls invoked via onChatMessage, not
+ingestion message types. They are tested via streamText tool invocation mocks.
 ```
 
-### I1.4 — Health endpoint (Task 1.4)
+### I1.4 — Health endpoint (Task 1.4) — Optional
 
 ```
 TEST: GET /api/health returns JSON
-RUN:   agent.onRequest(new Request("http://localhost/api/health"))
+NOTE: AIChatAgent does not have onRequest. This endpoint would need to be
+      added to the Worker fetch handler, not the Agent class.
+RUN:   fetch("http://localhost:5173/api/health")
 PASS:  Response status 200, body is { status: "ok", skills: 0 }
+      (Optional — not a core Agent feature, may be omitted)
 ```
 
-### I1.5 — Chat persistence in SQLite (Task 1.4)
+### I1.5 — Chat persistence (Task 1.4)
 
 ```
-TEST: appendChat stores messages that survive reload
+TEST: Chat messages persist across Agent re-instantiation
+NOTE: Chat persistence is managed internally by AIChatAgent (this.messages).
+      There is no separate chat_history table — the framework handles storage.
 SETUP: Agent with SQLite
-RUN:   Send "chat" message → wait for "done" → query chat_history table
-PASS:  2 rows exist (1 user + 1 assistant), role and content match
+RUN:   Send chat message via onChatMessage → verify this.messages includes it
+       → simulate Agent restart → verify this.messages still returns prior messages
+PASS:  Messages restored by the framework after restart (implicit persistence)
 ```
 
 ### I1.6 — State initialization (Task 1.4)
@@ -114,8 +127,8 @@ TEST: Initial state has correct shape
 RUN:   agent.onStart()
 CHECK: agent.state
 PASS:  state.skills === [], state.graphData.nodes === [], state.graphData.edges === [],
-       state.activeConversation is array, state.draftSkill === null,
-       state.pendingPatterns === [], state.ingestionStatus === "idle"
+       state.draftSkill === null, state.synthesizedSkill === null,
+       state.ingestionStatus === "idle"
 ```
 
 ### I1.7 — Workflow compiles (Task 1.5)
@@ -132,14 +145,14 @@ PASS:  No throw on import, class has run() method
 ### S1.1 — Dev server starts (Task 1.1, 1.2)
 
 ```
-RUN:    npx wrangler dev
-PASS:   Terminal shows "Ready on http://localhost:8787" (no crash)
+RUN:    npm run dev
+PASS:   Terminal shows Vite dev server at http://localhost:5173 (no crash)
 ```
 
 ### S1.2 — Page loads with dark theme (Task 1.7)
 
 ```
-RUN:    Open http://localhost:8787
+RUN:    Open http://localhost:5173
 CHECK:  Background is near-black (#0a0a0a), text is light gray
 CHECK:  "Skill Forge" header visible
 CHECK:  Empty state message visible ("Paste a conversation..." or similar)
@@ -193,7 +206,7 @@ PASS:   Agent receives and routes ingest message correctly (even though stub)
 ### S1.8 — Health API (Task 1.4)
 
 ```
-RUN:    Navigate to http://localhost:8787/api/health (or curl)
+RUN:    Navigate to http://localhost:5173/api/health (or curl)
 CHECK:  Returns JSON: {"status":"ok","skills":0}
 PASS:   HTTP endpoint works alongside WebSocket
 ```
@@ -205,8 +218,8 @@ PASS:   HTTP endpoint works alongside WebSocket
 | # | Criterion | Test |
 |---|-----------|------|
 | G1.1 | TypeScript compiles | U1.1 |
-| G1.2 | `wrangler dev` starts | S1.1 |
-| G1.3 | 4 SQL tables created | I1.1 |
+| G1.2 | `npm run dev` starts | S1.1 |
+| G1.3 | 3 SQL tables created | I1.1 |
 | G1.4 | Chat round-trip with streaming | S1.4 |
 | G1.5 | Chat persists across refresh | S1.6 |
 | G1.6 | WebSocket connects and stays open | S1.5 |
