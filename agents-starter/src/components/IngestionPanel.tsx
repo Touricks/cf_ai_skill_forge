@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo, useCallback } from "react";
+import { useState, useRef, useMemo, useCallback, useEffect } from "react";
 import { Button, Surface, Badge } from "@cloudflare/kumo";
 import {
   XIcon,
@@ -19,6 +19,8 @@ interface IngestionPanelProps {
   error: string | null;
   synthesizedSkill: SynthesizedSkill | null;
   draftSkill: string | null;
+  prefillContent: string | null;
+  onPrefillConsumed: () => void;
 }
 
 // ── Turn parser ──────────────────────────────────────────────
@@ -87,7 +89,9 @@ export default function IngestionPanel({
   progress,
   error,
   synthesizedSkill,
-  draftSkill
+  draftSkill,
+  prefillContent,
+  onPrefillConsumed
 }: IngestionPanelProps) {
   const [content, setContent] = useState("");
   const [isOpen, setIsOpen] = useState(false);
@@ -98,6 +102,15 @@ export default function IngestionPanel({
   const [turns, setTurns] = useState<ConversationTurn[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [skillHint, setSkillHint] = useState("");
+
+  // Auto-fill from /copy k command
+  useEffect(() => {
+    if (prefillContent) {
+      setContent(prefillContent);
+      setIsOpen(true);
+      onPrefillConsumed();
+    }
+  }, [prefillContent]);
 
   const phase: Phase = useMemo(() => {
     if (synthesizedSkill || draftSkill) return "draft";

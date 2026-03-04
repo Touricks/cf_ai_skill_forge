@@ -24,6 +24,26 @@ import SkillPreview from "./components/SkillPreview";
 import type { SynthesizedSkill, SkillForgeState, SkillMetadata } from "./types";
 import { TAG_COLORS } from "./graph";
 
+// ── Helpers ───────────────────────────────────────────────────────────
+
+function formatLastKTurns(messages: UIMessage[], k: number): string | null {
+  const recent = messages.slice(-(k * 2));
+  if (recent.length === 0) return null;
+
+  return recent
+    .map((msg) => {
+      const textParts = msg.parts.filter((p) => p.type === "text");
+      const text = textParts
+        .map((p) => (p as { type: "text"; text: string }).text)
+        .join("\n");
+      if (!text) return null;
+      const speaker = msg.role === "user" ? "User" : "Assistant";
+      return `${speaker}: ${text}`;
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 // ── Main chat ─────────────────────────────────────────────────────────
 
 function Chat() {
@@ -44,6 +64,7 @@ function Chat() {
   const [synthesizedSkill, setSynthesizedSkill] =
     useState<SynthesizedSkill | null>(null);
   const [draftSkill, setDraftSkill] = useState<string | null>(null);
+  const [prefillContent, setPrefillContent] = useState<string | null>(null);
 
   // Graph panel state
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
@@ -161,6 +182,14 @@ function Chat() {
     [agent]
   );
 
+  const handleCopyToIngestion = useCallback(
+    (k: number) => {
+      const formatted = formatLastKTurns(messages, k);
+      if (formatted) setPrefillContent(formatted);
+    },
+    [messages]
+  );
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -175,12 +204,24 @@ function Chat() {
   const send = useCallback(() => {
     const text = input.trim();
     if (!text || isStreaming) return;
+
+    // Intercept /copy k command
+    const copyMatch = text.match(/^\/copy\s+(\d+)$/i);
+    if (copyMatch) {
+      handleCopyToIngestion(parseInt(copyMatch[1], 10));
+      setInput("");
+      if (textareaRef.current) {
+        textareaRef.current.style.height = "auto";
+      }
+      return;
+    }
+
     setInput("");
     sendMessage({ role: "user", parts: [{ type: "text", text }] });
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
-  }, [input, isStreaming, sendMessage]);
+  }, [input, isStreaming, sendMessage, handleCopyToIngestion]);
 
   return (
     <div className="flex flex-col h-screen bg-kumo-elevated">
@@ -246,6 +287,8 @@ function Chat() {
               error={ingestionError}
               synthesizedSkill={synthesizedSkill}
               draftSkill={draftSkill}
+              prefillContent={prefillContent}
+              onPrefillConsumed={() => setPrefillContent(null)}
             />
           </div>
 
